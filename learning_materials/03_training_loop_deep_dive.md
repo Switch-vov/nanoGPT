@@ -42,7 +42,7 @@
 
 ---
 
-## 第一部分：梯度下降的直觉理解
+## 📚 第一部分：梯度下降的直觉理解
 
 ### 🏔️ 比喻：下山找最低点
 
@@ -71,7 +71,7 @@
 
 ---
 
-## 第二部分：数学原理（用最简单例子）
+## 📚 第二部分：数学原理（用最简单例子）
 
 ### 例子：训练一个超简单的"模型"
 
@@ -153,7 +153,7 @@ w的变化过程：
 
 ---
 
-## 第三部分：GPT训练的完整流程
+## 📚 第三部分：GPT训练的完整流程
 
 ### 🔥 单次迭代的详细步骤
 
@@ -181,7 +181,7 @@ Y = tensor([
 
 ---
 
-### 步骤1：前向传播（Forward Pass）
+#### 步骤1：前向传播（Forward Pass）
 
 ```python
 # 代码（train.py 第300行）
@@ -276,7 +276,7 @@ total_loss = average([loss₀₀, loss₀₁, ..., loss₃₇])
 
 ---
 
-### 步骤2：梯度累积（Gradient Accumulation）
+#### 步骤2：梯度累积（Gradient Accumulation）
 
 ```python
 # 代码（train.py 第292-305行）
@@ -312,7 +312,7 @@ micro_step 4: loss₄ = 2.6/4 = 0.650 → backward → 累积梯度 = 2.450
 
 ---
 
-### 步骤3：反向传播（Backward Pass）
+#### 步骤3：反向传播（Backward Pass）
 
 ```python
 scaler.scale(loss).backward()
@@ -369,7 +369,7 @@ loss = 2.45
 
 ---
 
-### 步骤4：梯度裁剪（Gradient Clipping）
+#### 步骤4：梯度裁剪（Gradient Clipping）
 
 ```python
 # 代码（train.py 第307-309行）
@@ -433,7 +433,7 @@ if grad_norm > grad_clip:
 
 ---
 
-### 步骤5：参数更新（Optimizer Step）
+#### 步骤5：参数更新（Optimizer Step）
 
 ```python
 # 代码（train.py 第311-314行）
@@ -521,7 +521,7 @@ w = ... (继续更新)
 
 ---
 
-## 第四部分：完整训练循环可视化
+## 📚 第四部分：完整训练循环可视化
 
 ### 📊 一个完整epoch的loss变化
 
@@ -577,7 +577,7 @@ Loss
 
 ---
 
-## 第五部分：实战调试技巧
+## 📚 第五部分：实战调试技巧
 
 ### 🔧 打印梯度信息
 
