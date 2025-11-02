@@ -450,6 +450,7 @@ quantized, scale, zero = per_tensor_quantize(tensor)
 def per_channel_quantize(tensor):
     # tensor shape: [out_channels, in_channels]
     scales = []
+    min_vals = []  # ✅ 也需要记录每个通道的min_val！
     quantized_channels = []
     
     # 对每个输出通道单独量化
@@ -461,9 +462,10 @@ def per_channel_quantize(tensor):
         q_channel = ((channel - min_val) / scale).round().int()
         
         scales.append(scale)
+        min_vals.append(min_val)  # ✅ 记录zero_point
         quantized_channels.append(q_channel)
     
-    return torch.stack(quantized_channels), scales
+    return torch.stack(quantized_channels), scales, min_vals  # ✅ 返回三个值
 
 # 例子
 # 假设有3个输出通道
@@ -473,11 +475,20 @@ tensor = torch.tensor([
     [-5.5, -3.2, -4.1]  # 通道3: 范围 [-5.5, -3.2]
 ])
 
-# 每个通道用自己的scale
-quantized, scales = per_channel_quantize(tensor)
+# 每个通道用自己的scale和min_val
+quantized, scales, min_vals = per_channel_quantize(tensor)
+
+# 反量化示例
+def per_channel_dequantize(quantized, scales, min_vals):
+    dequantized = []
+    for q_channel, scale, min_val in zip(quantized, scales, min_vals):
+        # R' = Q × scale + min_val
+        deq_channel = q_channel.float() * scale + min_val
+        dequantized.append(deq_channel)
+    return torch.stack(dequantized)
 
 优点: 精度更高（每个通道独立）✅
-缺点: 需要存储n个scales（n=通道数）
+缺点: 需要存储n个scales和n个min_vals（n=通道数）
 实际: PyTorch默认使用这个！
 ```
 
@@ -489,6 +500,7 @@ def per_group_quantize(tensor, group_size=128):
     # 把参数分成多个组
     quantized = []
     scales = []
+    min_vals = []  # ✅ 也需要记录每组的min_val
     
     for i in range(0, tensor.numel(), group_size):
         group = tensor.view(-1)[i:i+group_size]
@@ -501,18 +513,19 @@ def per_group_quantize(tensor, group_size=128):
         
         quantized.append(q_group)
         scales.append(scale)
+        min_vals.append(min_val)  # ✅ 记录zero_point
     
-    return torch.cat(quantized), scales
+    return torch.cat(quantized), scales, min_vals  # ✅ 返回三个值
 
 # 例子
 tensor = torch.randn(1024)  # 1024个参数
 
 # 分成8组，每组128个参数
-quantized, scales = per_group_quantize(tensor, group_size=128)
-# 需要存储8个scales
+quantized, scales, min_vals = per_group_quantize(tensor, group_size=128)
+# 需要存储8个scales和8个min_vals
 
 优点: 精度最高（每组独立）
-缺点: scales数量多，计算复杂
+缺点: scales和min_vals数量多，计算复杂
 应用: GPTQ等高级量化算法
 ```
 
