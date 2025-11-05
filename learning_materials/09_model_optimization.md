@@ -80,18 +80,18 @@
   ├── 2.4 实战：端到端推理优化
   └── 第二部分总结
   
-第三部分：推理引擎与生产部署
+第三部分：推理引擎与部署
   ├── 3.1 部署框架选择（vLLM、TensorRT-LLM等）
   ├── 3.2 vLLM实战：从0到生产部署
-  ├── 3.3 生产级部署：Docker、K8s、监控、成本优化
-  ├── 3.4 Tensor并行推理优化（大模型分布式推理）
-  ├── 3.5 端到端部署流程总览
+  ├── 3.3 Tensor并行推理优化（大模型分布式推理）
+  ├── 3.4 端到端部署流程总览
   └── 第三部分总结
 
 每个部分都有：
-  💡 直观理解 → 📊 具体例子 → 🔧 实战代码 → 💰 成本分析
+  💡 直观理解 → 📊 具体例子 → 🔧 实战代码 → 💰 性能分析
   
-总文档长度：6200+行，预计学习时间5-6小时（包含新增Tensor并行章节）
+总文档长度：5900+行，预计学习时间4-5小时
+（注：生产部署内容已移至第10章，本章专注模型优化）
 ```
 
 **学习路线建议：**
@@ -101,20 +101,20 @@
   第2部分 → 2.1（必学！）, 2.4（实战）
            跳过2.2投机采样和2.3进阶内容
   第3部分 → 3.1, 3.2（了解vLLM即可）
-           跳过3.3的K8s和监控、3.4的Tensor并行
+           跳过3.3的Tensor并行（大模型场景才需要）
   
 实战路线（已有基础，完整学习）:
   第1部分 → 全部（包括GPTQ、AWQ）
   第2部分 → 全部（包括投机采样、PagedAttention原理）
-  第3部分 → 全部（包括K8s、监控、成本优化、Tensor并行）
+  第3部分 → 全部（包括vLLM、Tensor并行）
   实战所有代码示例
   
 大模型推理场景（重点学习Tensor并行）:
   第1部分 → 1.2（精度）, 1.4（量化实战）
   第2部分 → 2.1（KV Cache必学）
-  第3部分 → 3.4（Tensor并行，重点！）⭐⭐⭐⭐⭐
+  第3部分 → 3.3（Tensor并行，重点！）⭐⭐⭐⭐⭐
            3.2（vLLM实战）
-           3.5（完整流程）
+           3.4（完整流程）
   适合：大模型推理（>7B）、单GPU显存不足、多GPU部署场景
   
 训练优化场景:
@@ -125,13 +125,15 @@
   量化模型 → 1.4实战
   加速推理 → 2.4实战
   部署生产 → 3.2 vLLM实战
-  成本优化 → 3.3步骤4
+  大模型推理 → 3.3 Tensor并行
+  容器化部署 → 参考第10章
   
 生产部署路线（实际项目）:
   1. 先学第1部分（量化）
   2. 再学第2部分2.1（KV Cache必学）
-  3. 重点学第3部分（部署流程）
-  4. 根据需要回看第2部分进阶内容
+  3. 重点学第3部分（vLLM部署流程）
+  4. 容器化和运维参考第10章
+  5. 根据需要回看第2部分进阶内容
 ```
 
 ---
@@ -3893,7 +3895,8 @@ KV Cache：
 ```
 3.1 部署框架选择 - 了解各种推理引擎
 3.2 vLLM实战 - 最流行的推理引擎
-3.3 生产级部署 - Docker、K8s、监控、成本优化
+3.3 Tensor并行推理优化 - 大模型分布式推理
+3.4 端到端部署流程总览 - 完整优化流程
 ```
 
 ---
@@ -4424,382 +4427,7 @@ curl -X POST "http://localhost:8000/batch_generate?max_tokens=30" \
 
 ---
 
-### 📚 3.3 生产级部署：从Docker到运维
-
-> 💡 **完整的生产部署流程**：部署不只是把代码跑起来，还需要容器化、编排、监控、告警、成本优化等一整套体系。
-
-#### 🎯 生产部署全景
-
-```python
-生产部署的挑战：
-
-开发环境 → 生产环境的Gap:
-  ❌ 环境不一致（"我这儿能跑"）
-  ❌ 手动部署（容易出错）
-  ❌ 无法扩容（流量高峰宕机）
-  ❌ 没有监控（不知道哪里出问题）
-  ❌ 成本失控（账单爆炸）
-
-解决方案：
-  ✅ Docker：一次构建，到处运行
-  ✅ Kubernetes：自动扩缩容、故障恢复
-  ✅ Prometheus + Grafana：实时监控
-  ✅ 告警系统：及时发现问题
-  ✅ 成本优化：降低80%成本
-```
-
-#### 步骤1：Docker容器化
-
-**为什么需要Docker？**
-
-```python
-生活比喻：搬家
-
-传统方式（手动部署）:
-  - 新服务器：重新安装Python、CUDA、依赖...
-  - 版本不一致：开发用Python 3.10，服务器Python 3.8
-  - 环境变量：忘记设置某个变量，服务崩溃
-  - 结果：花2天调环境 ❌
-
-Docker方式:
-  - 打包：把模型+代码+环境全部打包成镜像
-  - 部署：docker run一条命令启动
-  - 一致性：开发和生产环境完全一致
-  - 结果：5分钟部署完成 ✅
-```
-
-**实战：Docker化vLLM服务**
-
-```dockerfile
-# Dockerfile - 完整的生产级配置
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
-
-# 安装Python
-RUN apt-get update && apt-get install -y python3.10 python3-pip
-
-# 安装依赖
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-# 复制代码
-COPY . /app
-WORKDIR /app
-
-# 下载模型
-RUN python download_model.py
-
-# 启动服务
-CMD ["python", "-m", "vllm.entrypoints.api_server", \
-     "--model", "gpt2", \
-     "--host", "0.0.0.0", \
-     "--port", "8000"]
-```
-
-```bash
-# 构建镜像
-docker build -t gpt2-service:v1 .
-
-# 运行容器
-docker run -d \
-  --gpus all \
-  -p 8000:8000 \
-  --name gpt2-api \
-  gpt2-service:v1
-
-# 测试
-curl http://localhost:8000/health
-```
-
----
-
-#### 步骤2：Kubernetes编排（可选进阶）
-
-> 💡 **适合谁？** 如果你只是小规模部署（1-2台服务器），Docker就够了。如果需要大规模部署（10+服务器、自动扩缩容、高可用），才需要K8s。
-
-**为什么需要Kubernetes？**
-
-```python
-生活比喻：管理连锁店
-
-Docker（单店模式）:
-  - 适合：1-2家店
-  - 管理：老板亲自管理
-  - 扩展：手动开新店
-  
-Kubernetes（连锁总部）:
-  - 适合：100+家店
-  - 管理：总部自动调度
-  - 扩展：根据客流自动开/关店
-  - 故障处理：某店倒闭自动转移客户
-  
-何时用K8s？
-  ✅ 需要自动扩缩容
-  ✅ 需要高可用（一台挂了不影响）
-  ✅ 需要滚动更新（0停机）
-  ✅ 管理10+服务器
-```
-
-**实战：K8s部署**
-
-```yaml
-# deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: gpt2-deployment
-spec:
-  replicas: 3  # 3个副本
-  selector:
-    matchLabels:
-      app: gpt2
-  template:
-    metadata:
-      labels:
-        app: gpt2
-    spec:
-      containers:
-      - name: gpt2
-        image: gpt2-service:v1
-        ports:
-        - containerPort: 8000
-        resources:
-          limits:
-            nvidia.com/gpu: 1  # 每个pod一个GPU
-          requests:
-            memory: "8Gi"
-            cpu: "4"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: gpt2-service
-spec:
-  selector:
-    app: gpt2
-  ports:
-  - port: 80
-    targetPort: 8000
-  type: LoadBalancer
-```
-
-```bash
-# 部署
-kubectl apply -f deployment.yaml
-
-# 查看状态
-kubectl get pods
-kubectl get services
-
-# 扩容
-kubectl scale deployment gpt2-deployment --replicas=10
-```
-
----
-
-#### 步骤3：监控与运维
-
-> 💡 **为什么监控重要？** 没有监控就像盲人开车，你不知道系统是否正常，不知道哪里出了问题，只有用户投诉时才发现系统崩了。
-
-**监控的价值：**
-
-```python
-生活比喻：体检
-
-没有监控:
-  - 感觉：应该没问题吧？
-  - 发现问题：用户投诉"网站打不开！"
-  - 排查：花2小时才发现是GPU显存满了
-  - 结果：损失用户、影响口碑 ❌
-
-有监控:
-  - 实时知道：GPU利用率90%，接近上限
-  - 提前告警：显存使用>85%，发送通知
-  - 快速排查：5分钟定位问题
-  - 结果：问题扼杀在摇篮里 ✅
-```
-
-**监控什么？**
-
-```python
-关键指标：
-
-1. 性能指标
-   ├── QPS（每秒请求数）
-   ├── 延迟（P50/P95/P99）
-   ├── tokens/s（吞吐量）
-   └── 错误率
-
-2. 资源指标
-   ├── GPU利用率
-   ├── GPU显存使用
-   ├── CPU使用率
-   └── 网络带宽
-
-3. 业务指标
-   ├── 活跃用户数
-   ├── 请求队列长度
-   ├── 模型版本
-   └── 成本/请求
-```
-
-**实战：Prometheus + Grafana监控**
-
-```python
-# 使用Prometheus + Grafana
-from prometheus_client import Counter, Histogram, Gauge
-import time
-
-# 定义指标
-request_count = Counter('requests_total', 'Total requests')
-request_duration = Histogram('request_duration_seconds', 'Request duration')
-gpu_utilization = Gauge('gpu_utilization', 'GPU utilization')
-active_requests = Gauge('active_requests', 'Active requests')
-
-@app.post("/generate")
-async def generate(request: GenerateRequest):
-    request_count.inc()
-    active_requests.inc()
-    
-    start = time.time()
-    try:
-        # 生成
-        output = llm.generate(...)
-        
-        duration = time.time() - start
-        request_duration.observe(duration)
-        
-        return output
-    finally:
-        active_requests.dec()
-
-# Grafana仪表板
-"""
-面板1: 请求QPS（每秒请求数）
-面板2: P50/P95/P99延迟
-面板3: GPU利用率
-面板4: 活跃请求数
-面板5: 错误率
-"""
-```
-
-#### 🚨 告警配置
-
-```yaml
-# alerting_rules.yaml
-groups:
-- name: gpt2_alerts
-  rules:
-  - alert: HighLatency
-    expr: histogram_quantile(0.95, request_duration_seconds) > 1.0
-    for: 5m
-    annotations:
-      summary: "P95 latency > 1s"
-      
-  - alert: HighErrorRate
-    expr: rate(errors_total[5m]) > 0.05
-    for: 5m
-    annotations:
-      summary: "Error rate > 5%"
-      
-  - alert: LowGPUUtilization
-    expr: gpu_utilization < 0.5
-    for: 10m
-    annotations:
-      summary: "GPU utilization < 50%"
-```
-
----
-
-#### 步骤4：成本优化（重要！）
-
-> 💡 **为什么重要？** GPU很贵！A100一小时3-5美元，一个月就是2000-3500美元。通过优化，可以降低80%成本，每月节省数千美元！
-
-**成本构成：**
-
-```python
-LLM推理成本 = GPU成本 + 网络成本 + 存储成本
-
-其中GPU成本占90%+，所以优化重点是GPU！
-
-成本优化 = 减少GPU数量 OR 降低GPU单价
-
-如何做到？
-  ✅ 量化：减少显存 → 用更小/更少的GPU
-  ✅ vLLM：提升吞吐 → 同样GPU服务更多用户
-  ✅ Spot实例：降低70%成本
-  ✅ 批处理：提升GPU利用率
-```
-
-**实战：成本计算器**
-
-```python
-# 成本计算
-def calculate_cost(
-    gpu_type="A100",
-    num_gpus=4,
-    hours_per_month=730,
-    requests_per_second=100
-):
-    # GPU成本
-    gpu_costs = {
-        "A100": 3.0,  # $/hour
-        "A10G": 1.0,
-        "T4": 0.35,
-    }
-    
-    gpu_cost = gpu_costs[gpu_type] * num_gpus * hours_per_month
-    
-    # 请求量
-    total_requests = requests_per_second * 3600 * hours_per_month
-    
-    # 每千次请求成本
-    cost_per_1k = (gpu_cost / total_requests) * 1000
-    
-    print(f"""
-成本分析报告：
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-GPU配置: {num_gpus}x {gpu_type}
-月度成本: ${gpu_cost:,.2f}
-月度请求: {total_requests:,.0f}
-每1K请求成本: ${cost_per_1k:.4f}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    """)
-
-# 示例
-calculate_cost(gpu_type="A10G", num_gpus=2, requests_per_second=50)
-```
-
-#### 🎯 优化策略
-
-```python
-优化策略：
-
-1. 模型优化
-├── 量化到INT4 → 显存减少8x → GPU数量减半
-├── 使用小模型 → GPT-2 (124M) vs GPT-2-XL (1.5B)
-└── 模型蒸馏 → 保持质量，减少参数
-
-2. 推理优化
-├── 使用vLLM → 吞吐量提升20x → GPU数量减少
-├── Continuous Batching → GPU利用率从50% → 90%
-└── KV Cache → 延迟降低50x
-
-3. 基础设施优化
-├── Spot实例 → 成本降低70%
-├── 自动扩缩容 → 根据负载调整GPU数量
-└── 多区域部署 → 降低网络延迟
-
-4. 业务优化
-├── 缓存常见请求 → 减少重复计算
-├── 限流 → 防止资源浪费
-└── 异步处理 → 提高吞吐量
-
-综合优化后：成本可降低 80-90%！
-```
-
----
-
-### 🚀 3.4 Tensor并行推理优化（大模型分布式推理）
+### 🚀 3.3 Tensor并行推理优化（大模型分布式推理）
 
 > 💡 **核心概念**：当单个GPU无法装下大模型时，通过Tensor并行将模型切分到多个GPU进行推理，实现大模型的高效部署。
 > 
@@ -5319,7 +4947,7 @@ Tensor并行核心要点（推理优化）：
 
 ---
 
-### 🎯 3.5 端到端部署流程总览
+### 🎯 3.4 端到端部署流程总览
 
 > 💡 **完整的从开发到生产的路线图**：把前面学的所有知识串起来，形成完整的部署流程。
 
@@ -5367,12 +4995,12 @@ Step 5: 成本优化
 
 ---
 
-### 📚 第三部分总结：生产部署完整指南
+### 📚 第三部分总结：推理引擎与部署
 
 #### ✅ 你已经学会了什么
 
 ```python
-生产部署技术体系：
+推理优化与部署技术体系：
 
 1. 推理引擎选择 ✅
    ├── HuggingFace Transformers：学习和原型
@@ -5388,13 +5016,7 @@ Step 5: 成本优化
    ├── 批量处理：高吞吐优化
    └── 实测效果：1538 tokens/s vs 80 tokens/s
 
-3. 容器化部署 ✅
-   ├── Docker：环境一致性，一次构建到处运行
-   ├── Kubernetes：自动扩缩容、故障恢复、滚动更新
-   ├── 何时用K8s：10+服务器、高可用需求
-   └── 实战配置：完整的deployment.yaml
-
-4. Tensor并行推理优化 ✅（新增）
+3. Tensor并行推理优化 ✅
    ├── 核心思想：将模型分片到多GPU进行推理
    ├── 关键技术：矩阵切分、通信优化、显存优化
    ├── 实现方案：vLLM Tensor并行、Accelerate device_map
@@ -5402,120 +5024,100 @@ Step 5: 成本优化
    ├── 性能提升：显存节省N倍、延迟降低2-3倍
    └── 训练优化：见[第08章：分布式训练](08_distributed_training.md)
 
-5. 监控运维 ✅
-   ├── Prometheus：指标收集（QPS、延迟、GPU利用率）
-   ├── Grafana：可视化仪表板
-   ├── 告警系统：自动通知关键问题
-   ├── 监控指标：性能、资源、业务三大类
-   └── 价值：提前发现问题，快速定位故障
-
-5. 成本优化 ✅
-   ├── 成本构成：90%是GPU成本
-   ├── 优化策略：量化、vLLM、Spot实例、批处理、Tensor并行
-   ├── 成本计算：每1K请求的成本分析
-   └── 效果：可降低80-90%成本
+4. 端到端部署流程 ✅
+   ├── 完整的优化流程：量化→加速→推理引擎→Tensor并行
+   ├── 性能指标监控：吞吐量、延迟、显存使用
+   ├── 部署最佳实践：选型、优化、验证
+   └── 生产级部署：参考[第10章：生产部署](10_production_deployment.md)
 ```
 
-#### 📊 生产部署效果对比
+#### 📊 推理引擎效果对比
 
 ```python
 ┌──────────────────┬──────────┬──────────┬──────────┬──────────┐
-│ 部署方案         │ 吞吐量   │ 并发     │ 成本     │ 推荐度   │
+│ 推理引擎         │ 吞吐量   │ 并发能力 │ 易用性   │ 推荐度   │
 ├──────────────────┼──────────┼──────────┼──────────┼──────────┤
-│ 裸Metal+HF       │ 50 t/s   │ 1        │ $10/1K   │ ⭐       │
-│ Docker+HF        │ 50 t/s   │ 1        │ $10/1K   │ ⭐⭐     │
-│ Docker+vLLM      │ 1000 t/s │ 20       │ $2/1K    │ ⭐⭐⭐⭐ │
-│ K8s+vLLM         │ 2000 t/s │ 100+     │ $0.5/1K  │ ⭐⭐⭐⭐⭐│
-│ K8s+vLLM+优化    │ 3000 t/s │ 200+     │ $0.1/1K  │ ⭐⭐⭐⭐⭐│
+│ HF Transformers  │ 80 t/s   │ 低       │ ⭐⭐⭐⭐⭐│ ⭐⭐     │
+│ vLLM             │ 1538 t/s │ 高       │ ⭐⭐⭐⭐ │ ⭐⭐⭐⭐⭐│
+│ TensorRT-LLM     │ 2000 t/s │ 极高     │ ⭐⭐     │ ⭐⭐⭐⭐ │
+│ llama.cpp        │ 150 t/s  │ 中       │ ⭐⭐⭐   │ ⭐⭐⭐   │
 └──────────────────┴──────────┴──────────┴──────────┴──────────┘
 
 关键发现：
   ✅ vLLM带来20x吞吐提升
-  ✅ K8s实现高可用和自动扩缩容
-  ✅ 综合优化可降低成本100倍
-  ✅ 监控让系统可观测、可控制
+  ✅ PagedAttention显著节省显存
+  ✅ Continuous Batching提升并发能力
+  ✅ Tensor并行支持大模型推理
 ```
 
-#### 🎯 部署决策树
+#### 🎯 推理优化决策树
 
 ```python
-如何选择部署方案？
+如何选择推理方案？
 
 开始
   │
-  ├─ 只是本地测试？
-  │   └─ 是 → Docker + HF ✅ 够用
+  ├─ 只是学习和原型开发？
+  │   └─ 是 → HuggingFace Transformers ✅
   │
-  ├─ 需要部署生产？
+  ├─ 需要生产部署？
   │   └─ 是 → 继续
   │
-  ├─ QPS < 10？
-  │   └─ 是 → Docker + vLLM ✅
-  │           单机部署，简单维护
+  ├─ 模型大小 < 7B？
+  │   └─ 是 → vLLM（单GPU）✅
   │
-  ├─ QPS 10-100？
-  │   └─ 是 → Docker + vLLM + 监控 ✅
-  │           可能需要2-3台服务器
+  ├─ 模型大小 7B-70B？
+  │   └─ 是 → vLLM + Tensor并行（多GPU）✅
   │
-  ├─ QPS > 100？
-  │   └─ 是 → K8s + vLLM + 监控 + 自动扩缩容 ✅
-  │           必须用K8s管理
+  ├─ 追求极致性能？
+  │   └─ 是 → TensorRT-LLM ✅
+  │           （需要更多开发工作）
   │
-  └─ 追求极致性能和成本优化？
-      └─ 是 → K8s + vLLM + 量化 + Spot实例 + 全套监控 ✅
+  └─ CPU/边缘设备部署？
+      └─ 是 → llama.cpp + GGUF量化 ✅
 
 推荐路径：
-  🥇 小规模（<1000用户）
-     Docker + vLLM + 基础监控
-     成本：$200-500/月
+  🥇 小模型（<3B参数）
+     vLLM + INT8量化
+     单GPU即可
      
-  🥈 中规模（1000-10000用户）
-     K8s + vLLM + Prometheus + Grafana
-     成本：$1000-3000/月
+  🥈 中型模型（3B-13B）
+     vLLM + INT4量化
+     单GPU或TP=2
      
-  🥉 大规模（10000+用户）
-     K8s + vLLM + 量化 + 完整运维体系
-     成本：$5000-20000/月（但每请求成本更低）
+  🥉 大模型（13B-70B）
+     vLLM + Tensor并行（TP=4/8）
+     多GPU协同
 ```
 
-#### 💡 生产部署最佳实践
+#### 💡 推理优化最佳实践
 
 ```python
-1. 容器化（必做）✅
-   ├── 使用Docker确保环境一致
-   ├── 不要在容器里存储数据
-   ├── 使用多阶段构建减小镜像
-   └── 镜像打tag，方便回滚
+1. 模型优化（必做）✅
+   ├── 量化到INT8/INT4减少显存
+   ├── 使用KV Cache加速生成
+   ├── 选择合适的模型大小
+   └── 根据显存选择TP大小
 
-2. 高可用（重要）✅
-   ├── 至少2个副本
-   ├── 健康检查和自动重启
-   ├── 优雅关闭（处理完请求再退出）
-   └── 滚动更新（0停机）
+2. 推理引擎选择（重要）✅
+   ├── 90%场景选vLLM
+   ├── 极致性能选TensorRT-LLM
+   ├── CPU部署选llama.cpp
+   └── 原型开发用HuggingFace
 
-3. 监控告警（必做）✅
-   ├── 监控关键指标（延迟、错误率、GPU）
-   ├── 设置合理的告警阈值
-   ├── 告警要有优先级（紧急/重要/普通）
-   └── 定期review和调整
+3. 性能监控（必做）✅
+   ├── 监控吞吐量（tokens/s）
+   ├── 监控延迟（P50/P95/P99）
+   ├── 监控显存使用
+   └── 监控GPU利用率
 
-4. 成本控制（重要）✅
-   ├── 使用合适的GPU（不要over-provision）
-   ├── 量化减少显存需求
-   ├── 考虑Spot实例（降低70%成本）
-   └── 监控成本趋势
+4. Tensor并行使用（大模型）✅
+   ├── 单GPU放不下时使用
+   ├── 选择合适的TP大小（2/4/8）
+   ├── 注意通信开销
+   └── 监控各GPU负载均衡
 
-5. 安全性（重要）✅
-   ├── API认证和限流
-   ├── HTTPS加密
-   ├── 敏感信息用secrets管理
-   └── 定期更新依赖（安全补丁）
 
-6. 文档和流程（重要）✅
-   ├── 部署文档（SOP）
-   ├── 故障处理手册
-   ├── 监控指标说明
-   └── 定期演练（灾难恢复）
 ```
 
 #### 🚀 下一步学习
@@ -5524,22 +5126,22 @@ Step 5: 成本优化
 完成第三部分后，你应该：
 
 1. 动手实践 ⭐⭐⭐⭐⭐
-   ├── 用Docker部署一个vLLM服务
-   ├── 添加Prometheus监控
-   ├── 配置Grafana仪表板
-   └── 测试自动扩缩容
+   ├── 部署一个vLLM服务
+   ├── 测试不同推理引擎的性能
+   ├── 实践Tensor并行（如果有多GPU）
+   └── 对比优化前后的效果
 
-2. 深入学习（可选）
-   ├── Kubernetes高级特性（StatefulSet、DaemonSet）
-   ├── Service Mesh（Istio）
-   ├── 持续集成/持续部署（CI/CD）
-   └── 云原生最佳实践
+2. 深入学习（推荐）
+   ├── vLLM源码阅读（PagedAttention实现）
+   ├── TensorRT-LLM进阶优化
+   ├── llama.cpp CPU优化技巧
+   └── 分布式推理架构设计
 
-3. 生产经验（重要）
-   ├── 处理真实的生产问题
-   ├── 优化特定场景的性能
-   ├── 降低实际的运营成本
-   └── 建立完善的监控体系
+3. 生产部署（重要）
+   ├── 学习Docker容器化 → 参考第10章
+   ├── 学习Kubernetes编排 → 参考第10章
+   ├── 学习监控运维 → 参考第10章
+   └── 学习成本优化 → 参考第10章
 ```
 
 #### 知识检查清单
@@ -5552,12 +5154,7 @@ Step 5: 成本优化
   □ 说出PagedAttention和Continuous Batching的原理
   □ 根据场景选择合适的推理引擎
   □ 能够安装和配置vLLM
-
-容器化：
-  □ 编写Dockerfile构建模型服务镜像
-  □ 理解Docker的优势和局限
-  □ 知道何时需要Kubernetes
-  □ 能够编写K8s deployment配置
+  □ 知道如何使用vLLM构建API服务
 
 Tensor并行推理优化：
   □ 理解Tensor并行的核心原理（模型分片到多GPU）
@@ -5568,18 +5165,17 @@ Tensor并行推理优化：
   □ 能够根据模型大小选择合适的TP大小（TP=2/4/8）
   □ 了解训练优化请参考[第08章](08_distributed_training.md)
 
-监控运维：
-  □ 列举需要监控的关键指标
-  □ 配置Prometheus采集指标
-  □ 创建Grafana可视化面板
-  □ 设置告警规则
+端到端优化流程：
+  □ 能够从零开始优化一个模型的推理性能
+  □ 知道如何选择合适的优化组合
+  □ 能够监控和分析性能指标
+  □ 理解不同优化技术的权衡
 
-成本优化：
-  □ 计算GPU推理的成本
-  □ 说出至少3种降低成本的方法
-  □ 理解量化如何降低成本
-  □ 知道Spot实例的优缺点
-  □ 理解Tensor并行如何降低成本（使大模型可部署）
+生产部署（第10章）：
+  □ 容器化部署（Docker） → 参考第10章
+  □ 编排和扩缩容（K8s） → 参考第10章
+  □ 监控运维（Prometheus/Grafana） → 参考第10章
+  □ 成本优化策略 → 参考第10章
 
 如果有不确定的，回到相应章节复习！
 ```
