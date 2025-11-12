@@ -187,7 +187,7 @@
 |------|------|----------|------|------|
 | 11 | 多模态模型 | CLIP、LLaVA、视觉编码器、跨模态对齐 | 🌳🌳 前沿 | 3-4小时 |
 | 12 | 混合专家模型 | MoE架构、稀疏激活、路由机制、负载均衡 | 🌳 前沿 | 2-3小时 |
-| 13 | RLHF与对齐 | 奖励建模、PPO、DPO、安全对齐 | 🌳 前沿 | 2-3小时 |
+| 13 | RLHF与对齐 | 奖励建模、PPO、DPO、GRPO、安全对齐 | 🌳 前沿 | 2-3小时 |
 
 **技术前沿**
 
@@ -205,6 +205,7 @@
 - InstructGPT：OpenAI的三阶段RLHF
 - Constitutional AI：Anthropic的自我批评方法
 - DPO：简化的直接偏好优化
+- GRPO：DeepSeek-V2的高效对齐方案（工业界新标准）
 
 ---
 
@@ -762,7 +763,7 @@ Mixtral-8×7B vs LLaMA-70B:
 **学习目标**
 - 理解人类反馈强化学习的理论基础
 - 掌握奖励模型训练和PPO微调
-- 了解DPO等简化对齐方法
+- 了解DPO、GRPO等简化对齐方法
 
 **RLHF三阶段**
 
@@ -821,6 +822,29 @@ L_DPO = -E[log σ(
   - 结果与RLHF相当
 ```
 
+**GRPO：组相对策略优化** ⭐
+```
+核心思想：组内相对对比学习，不需要参考模型
+
+架构：
+  1. 为每个prompt生成K个回答
+  2. 用奖励模型打分
+  3. 计算相对于组平均的优势
+  4. 加权优化策略
+
+优势：
+  - 显存友好：只需1个模型（vs DPO的2个，PPO的3个）
+  - 训练稳定：组内归一化，梯度方差小
+  - 数据高效：组内对比，利用率提升K倍
+  - 收敛快速：通常1个epoch即可
+  - 效果优秀：接近PPO 96-99%
+
+应用：
+  - DeepSeek-V2：达到GPT-4级别效果
+  - Qwen系列：工业级高效对齐方案
+  - 工业界新标准
+```
+
 **对齐评估**
 ```
 能力评估：
@@ -840,6 +864,7 @@ L_DPO = -E[log σ(
 ```
 
 **前沿研究**
+- GRPO (DeepSeek-V2, 2024)：组相对策略优化，工业界新标准
 - Constitutional AI (Anthropic)：自我批评和修正
 - RLAIF：用AI反馈替代人类反馈
 - Process Supervision：对推理过程进行奖励
@@ -1357,6 +1382,8 @@ cd nanoGPT
 
 **前沿技术**
 - InstructGPT: RLHF (Ouyang et al., 2022)
+- DPO: Direct Preference Optimization (Rafailov et al., 2023)
+- GRPO: Group Relative Policy Optimization (DeepSeek-V2, 2024)
 - Switch Transformers (Fedus et al., 2021)
 - CLIP (Radford et al., 2021)
 

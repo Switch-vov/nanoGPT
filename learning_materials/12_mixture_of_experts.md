@@ -2237,10 +2237,342 @@ model = train_moe_simple()
 ```python
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
-import wandb
-from tqdm import tqdm
+
+# 可选的依赖
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+    
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    tqdm = lambda x, **kwargs: x  # 回退到普通迭代器
+
+# ===== MoE 模型实现 =====
+
+class SimpleMoE(nn.Module):
+    """简单的MoE层（Top-K路由）"""
+    def __init__(self, d_model=768, num_experts=8, top_k=2, dropout=0.1):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.d_model = d_model
+        
+        # 路由器
+        self.router = nn.Linear(d_model, num_experts, bias=False)
+        
+        # 专家们（每个是标准FFN）
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model, d_model * 4),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model * 4, d_model),
+                nn.Dropout(dropout)
+            )
+            for _ in range(num_experts)
+        ])
+    
+    def forward(self, x):
+        """
+        x: [batch_size, seq_len, d_model]
+        返回: (output, aux_loss)
+        """
+        batch_size, seq_len, d_model = x.shape
+        
+        # Flatten for easier processing
+        x_flat = x.view(-1, d_model)  # [batch*seq, d_model]
+        
+        # 步骤1：路由
+        router_logits = self.router(x_flat)  # [batch*seq, num_experts]
+        router_probs = F.softmax(router_logits, dim=-1)
+        
+        # 步骤2：Top-K选择
+        top_k_probs, top_k_indices = torch.topk(router_probs, self.top_k, dim=-1)
+        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
+        
+        # 步骤3：专家计算（简化版，不做容量控制）
+        output = torch.zeros_like(x_flat)
+        
+        for k in range(self.top_k):
+            expert_ids = top_k_indices[:, k]  # [batch*seq]
+            gates = top_k_probs[:, k]  # [batch*seq]
+            
+            for expert_id in range(self.num_experts):
+                mask = (expert_ids == expert_id)
+                if mask.any():
+                    expert_input = x_flat[mask]
+                    expert_output = self.experts[expert_id](expert_input)
+                    output[mask] += gates[mask].unsqueeze(-1) * expert_output
+        
+        # 步骤4：计算负载均衡损失（简化版）
+        aux_loss = self._compute_load_balance_loss(router_probs, top_k_indices)
+        
+        # 恢复形状
+        output = output.view(batch_size, seq_len, d_model)
+        
+        return output, aux_loss
+    
+    def _compute_load_balance_loss(self, router_probs, top_k_indices):
+        """简化的负载均衡损失"""
+        # 专家使用频率
+        expert_mask = F.one_hot(top_k_indices, self.num_experts).float()
+        f = expert_mask.sum(dim=[0, 1]) / expert_mask.sum()
+        
+        # 路由概率
+        P = router_probs.mean(dim=0)
+        
+        # 负载均衡损失
+        loss = (f * P).sum() * self.num_experts
+        return 0.01 * loss  # 权重0.01
+
+
+class MultiHeadAttention(nn.Module):
+    """标准的多头注意力"""
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        super().__init__()
+        assert d_model % num_heads == 0
+        
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
+        
+        self.qkv = nn.Linear(d_model, 3 * d_model)
+        self.out = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        B, T, C = x.shape
+        
+        # QKV
+        qkv = self.qkv(x)
+        q, k, v = qkv.split(self.d_model, dim=-1)
+        
+        # Reshape for multi-head
+        q = q.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # Attention
+        attn = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        attn = F.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
+        
+        # Output
+        out = attn @ v
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
+        out = self.out(out)
+        
+        return out
+
+
+class StandardTransformerBlock(nn.Module):
+    """标准Transformer Block（使用普通FFN）"""
+    def __init__(self, d_model=768, num_heads=12, dropout=0.1):
+        super().__init__()
+        
+        # Attention部分
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = MultiHeadAttention(d_model, num_heads, dropout)
+        
+        # 标准FFN（不是MoE）
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, x):
+        """
+        x: [batch_size, seq_len, d_model]
+        返回: output（没有aux_loss）
+        """
+        # Self-Attention
+        x = x + self.attn(self.ln1(x))
+        
+        # 标准FFN
+        x = x + self.ffn(self.ln2(x))
+        
+        return x
+
+
+class MoETransformerBlock(nn.Module):
+    """MoE Transformer Block"""
+    def __init__(self, d_model=768, num_heads=12, num_experts=8, top_k=2, dropout=0.1):
+        super().__init__()
+        
+        # Attention部分
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = MultiHeadAttention(d_model, num_heads, dropout)
+        
+        # MoE部分
+        self.ln2 = nn.LayerNorm(d_model)
+        self.moe = SimpleMoE(d_model, num_experts, top_k, dropout)
+    
+    def forward(self, x):
+        """
+        x: [batch_size, seq_len, d_model]
+        返回: (output, aux_loss)
+        """
+        # Self-Attention
+        x = x + self.attn(self.ln1(x))
+        
+        # MoE FFN
+        moe_out, aux_loss = self.moe(self.ln2(x))
+        x = x + moe_out
+        
+        return x, aux_loss
+
+
+class MoEGPT(nn.Module):
+    """
+    混合架构的MoE GPT模型
+    
+    策略：
+      - 浅层：标准FFN（学习基础特征）
+      - 深层：MoE（学习复杂模式）
+    """
+    def __init__(
+        self,
+        vocab_size=50257,
+        block_size=1024,
+        n_layer=12,
+        n_head=12,
+        n_embd=768,
+        num_experts=8,
+        top_k=2,
+        moe_start_layer=None,  # 从哪一层开始使用MoE，None表示所有层都用MoE
+        dropout=0.1
+    ):
+        super().__init__()
+        self.block_size = block_size
+        self.n_layer = n_layer
+        
+        # 如果没有指定moe_start_layer，根据模型大小自动决定
+        if moe_start_layer is None:
+            # 默认：后2/3的层使用MoE
+            moe_start_layer = max(0, n_layer // 3)
+        self.moe_start_layer = moe_start_layer
+        
+        # Embedding层
+        self.token_embedding = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding = nn.Embedding(block_size, n_embd)
+        self.drop = nn.Dropout(dropout)
+        
+        # 混合Transformer Blocks
+        self.blocks = nn.ModuleList()
+        for i in range(n_layer):
+            if i < moe_start_layer:
+                # 前几层：标准Transformer（学习基础特征）
+                block = StandardTransformerBlock(
+                    d_model=n_embd,
+                    num_heads=n_head,
+                    dropout=dropout
+                )
+            else:
+                # 后几层：MoE Transformer（学习复杂模式）
+                block = MoETransformerBlock(
+                    d_model=n_embd,
+                    num_heads=n_head,
+                    num_experts=num_experts,
+                    top_k=top_k,
+                    dropout=dropout
+                )
+            self.blocks.append(block)
+        
+        # 输出层
+        self.ln_f = nn.LayerNorm(n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size, bias=False)
+        
+        # 权重共享
+        self.token_embedding.weight = self.lm_head.weight
+        
+        # 初始化
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        """初始化权重"""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    
+    def forward(self, idx, targets=None):
+        """
+        idx: [batch_size, seq_len] - 输入token索引
+        targets: [batch_size, seq_len] - 目标token（训练时）
+        """
+        B, T = idx.shape
+        assert T <= self.block_size, f"序列长度{T}超过最大长度{self.block_size}"
+        
+        # Embeddings
+        tok_emb = self.token_embedding(idx)  # [B, T, n_embd]
+        pos_emb = self.position_embedding(torch.arange(T, device=idx.device))  # [T, n_embd]
+        x = self.drop(tok_emb + pos_emb)  # [B, T, n_embd]
+        
+        # Transformer Blocks + 收集辅助损失
+        aux_losses = []
+        for i, block in enumerate(self.blocks):
+            if isinstance(block, MoETransformerBlock):
+                # MoE块：返回output和aux_loss
+                x, aux_loss = block(x)
+                aux_losses.append(aux_loss)
+            else:
+                # 标准块：只返回output
+                x = block(x)
+        
+        # 输出
+        x = self.ln_f(x)  # [B, T, n_embd]
+        logits = self.lm_head(x)  # [B, T, vocab_size]
+        
+        # 计算损失（训练时）
+        loss = None
+        if targets is not None:
+            # 主损失：语言模型的交叉熵
+            loss_lm = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1
+            )
+            
+            # 辅助损失：负载均衡（只有MoE层才有）
+            if aux_losses:
+                loss_aux = sum(aux_losses) / len(aux_losses)
+                loss = loss_lm + loss_aux
+            else:
+                loss = loss_lm
+        
+        return logits, loss
+    
+    def print_architecture(self):
+        """打印模型架构信息"""
+        print("\n" + "="*60)
+        print("模型架构:")
+        print("="*60)
+        print(f"总层数: {self.n_layer}")
+        print(f"MoE起始层: {self.moe_start_layer}")
+        print(f"标准FFN层: 0-{self.moe_start_layer-1} ({self.moe_start_layer}层)")
+        print(f"MoE层: {self.moe_start_layer}-{self.n_layer-1} ({self.n_layer - self.moe_start_layer}层)")
+        print("\n各层详情:")
+        for i, block in enumerate(self.blocks):
+            block_type = "MoE" if isinstance(block, MoETransformerBlock) else "Standard"
+            print(f"  Layer {i:2d}: {block_type}")
+        print("="*60 + "\n")
+
+
+# ===== 训练器 =====
 
 class MoETrainer:
     """
@@ -2288,8 +2620,10 @@ class MoETrainer:
         self.epoch = 0
         
         # WandB
-        if self.config['use_wandb']:
+        if self.config['use_wandb'] and HAS_WANDB:
             wandb.init(project="moe-training", config=self.config)
+        elif self.config['use_wandb'] and not HAS_WANDB:
+            print("⚠️  wandb未安装，跳过wandb日志记录")
     
     @staticmethod
     def default_config():
@@ -2394,7 +2728,7 @@ class MoETrainer:
         print(f"Step {self.step}: Loss={loss:.4f}, LR={lr:.6f}")
         
         # WandB
-        if self.config['use_wandb']:
+        if self.config['use_wandb'] and HAS_WANDB:
             wandb.log(metrics, step=self.step)
     
     def monitor_expert_usage(self):
@@ -2434,7 +2768,7 @@ class MoETrainer:
         
         print(f"  Validation Loss: {avg_loss:.4f}")
         
-        if self.config['use_wandb']:
+        if self.config['use_wandb'] and HAS_WANDB:
             wandb.log({'val/loss': avg_loss}, step=self.step)
         
         self.model.train()
@@ -2457,35 +2791,157 @@ class MoETrainer:
 
 # === 使用示例 ===
 if __name__ == "__main__":
-    # 创建模型
+    print("="*60)
+    print("MoE GPT 演示程序")
+    print("="*60)
+    
+    # 检查CUDA
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"\n设备: {device}")
+    if device == 'cpu':
+        print("⚠️  警告: CUDA不可用，使用CPU会很慢")
+    
+    # 创建一个较小的混合架构模型用于演示
+    print("\n创建混合架构MoE模型...")
     model = MoEGPT(
-        vocab_size=50257,
-        block_size=1024,
-        n_layer=12,
-        n_head=12,
-        n_embd=768,
-        num_experts=8,
-        top_k=2
-    ).cuda()
+        vocab_size=1000,      # 较小的词汇表
+        block_size=128,       # 较短的序列
+        n_layer=6,            # 6层
+        n_head=4,
+        n_embd=256,           # 较小的维度
+        num_experts=4,        # 4个专家
+        top_k=2,
+        moe_start_layer=2,    # 前2层标准FFN，后4层MoE
+        dropout=0.1
+    )
     
-    # 准备数据
-    train_loader = ...  # 你的数据加载器
-    val_loader = ...
+    if device == 'cuda':
+        model = model.cuda()
     
-    # 训练配置
-    config = {
-        'learning_rate': 3e-4,
-        'max_steps': 100000,
-        'gradient_accumulation_steps': 4,
-        'use_amp': True,
-        'use_wandb': True,
-    }
+    # 打印架构信息
+    model.print_architecture()
     
-    # 创建训练器
-    trainer = MoETrainer(model, train_loader, val_loader, config)
+    # 计算参数量
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"总参数量: {total_params/1e6:.2f}M")
     
-    # 开始训练
-    trainer.train()
+    # 创建一些虚拟数据用于演示
+    print("\n生成演示数据...")
+    num_batches = 20
+    dummy_data = []
+    for _ in range(num_batches):
+        x = torch.randint(0, 1000, (2, 64))  # batch=2, seq=64
+        y = torch.randint(0, 1000, (2, 64))
+        dummy_data.append((x, y))
+    
+    # 简单的训练循环（不使用完整的Trainer）
+    print("\n开始训练演示（20步）...")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    model.train()
+    
+    for step, (x, y) in enumerate(dummy_data):
+        x, y = x.to(device), y.to(device)
+        
+        # 前向
+        logits, loss = model(x, targets=y)
+        
+        # 反向
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        
+        # 打印
+        if step % 5 == 0:
+            print(f"  Step {step:2d}: Loss = {loss.item():.4f}")
+    
+    print("\n✅ 演示完成！")
+    print("\n" + "="*60)
+    print("说明:")
+    print("  - 这是一个混合架构的MoE实现，包含了核心组件：")
+    print("    ✓ StandardTransformerBlock: 标准FFN层（学习基础特征）")
+    print("    ✓ MoETransformerBlock: MoE层（学习复杂模式）")
+    print("    ✓ SimpleMoE: Top-K路由的MoE层")
+    print("    ✓ 负载均衡损失（辅助损失）")
+    print("\n  - 混合架构的优势（根据文档12章）：")
+    print("    ✓ 训练更稳定（浅层用标准FFN）")
+    print("    ✓ 性能更好（深层用MoE学习复杂模式）")
+    print("    ✓ 平衡效率和效果")
+    print("\n  - 配置策略：")
+    print("    • 小模型(<1B): 后1/3层用MoE")
+    print("    • 中模型(1-10B): 后1/2层用MoE")
+    print("    • 大模型(>10B): 后2/3层用MoE")
+    print("\n  - 要使用真实数据训练，请：")
+    print("    1. 准备数据加载器（DataLoader）")
+    print("    2. 使用 MoETrainer 类进行完整训练")
+    print("    3. 调整模型大小和超参数")
+    print("    4. 根据模型规模调整 moe_start_layer")
+    print("="*60)
+```
+
+输出：
+```
+============================================================
+MoE GPT 演示程序
+============================================================
+
+设备: cuda
+
+创建混合架构MoE模型...
+
+============================================================
+模型架构:
+============================================================
+总层数: 6
+MoE起始层: 2
+标准FFN层: 0-1 (2层)
+MoE层: 2-5 (4层)
+
+各层详情:
+  Layer  0: Standard
+  Layer  1: Standard
+  Layer  2: MoE
+  Layer  3: MoE
+  Layer  4: MoE
+  Layer  5: MoE
+============================================================
+
+总参数量: 11.34M
+
+生成演示数据...
+
+开始训练演示（20步）...
+  Step  0: Loss = 6.9391
+  Step  5: Loss = 6.9628
+  Step 10: Loss = 7.0374
+  Step 15: Loss = 7.1128
+
+✅ 演示完成！
+
+============================================================
+说明:
+  - 这是一个混合架构的MoE实现，包含了核心组件：
+    ✓ StandardTransformerBlock: 标准FFN层（学习基础特征）
+    ✓ MoETransformerBlock: MoE层（学习复杂模式）
+    ✓ SimpleMoE: Top-K路由的MoE层
+    ✓ 负载均衡损失（辅助损失）
+
+  - 混合架构的优势（根据文档12章）：
+    ✓ 训练更稳定（浅层用标准FFN）
+    ✓ 性能更好（深层用MoE学习复杂模式）
+    ✓ 平衡效率和效果
+
+  - 配置策略：
+    • 小模型(<1B): 后1/3层用MoE
+    • 中模型(1-10B): 后1/2层用MoE
+    • 大模型(>10B): 后2/3层用MoE
+
+  - 要使用真实数据训练，请：
+    1. 准备数据加载器（DataLoader）
+    2. 使用 MoETrainer 类进行完整训练
+    3. 调整模型大小和超参数
+    4. 根据模型规模调整 moe_start_layer
+============================================================
 ```
 
 ---

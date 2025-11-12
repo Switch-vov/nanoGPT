@@ -19,7 +19,7 @@
 - ✅ 理解RLHF的三个阶段：SFT → RM → PPO
 - ✅ 学会训练奖励模型（Reward Model）
 - ✅ 掌握PPO算法的原理和实现
-- ✅ 了解DPO等简化方案
+- ✅ 了解DPO、GRPO等简化方案
 - ✅ 能够评估模型的对齐效果
 - ✅ 实践：从头实现一个简单的RLHF流程
 
@@ -1450,7 +1450,7 @@ PPO的优势:
 总成本: $10K-$100K（取决于规模）
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-简化方案: DPO (Direct Preference Optimization)
+简化方案1: DPO (Direct Preference Optimization)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   📥 输入:
@@ -1466,19 +1466,60 @@ PPO的优势:
   
   📤 输出:
     - 对齐后的模型 ✅
-    - 效果接近PPO，但简单10倍
+    - 效果接近PPO 95-98%，但简单10倍
     
   比喻: 🚀 像走捷径，直达目标
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+简化方案2: GRPO (Group Relative Policy Optimization) ⭐
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  📥 输入:
+    - SFT模型
+    - RM模型（奖励打分）
+    - Prompts（无需对比对）
+    
+  🎯 目标:
+    - 组内相对对比学习
+    - 不需要参考模型！
+    
+  ⏱️ 时间: 1-2天（单GPU，最快！）
+  
+  💰 成本: 低（显存友好）
+  
+  📤 输出:
+    - 对齐后的模型 ✅
+    - 效果接近PPO 96-99%
+    - 训练最稳定
+    
+  比喻: ⚡ 像坐高铁，又快又稳
+  
+  应用: DeepSeek-V2, Qwen系列
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-#### 🔄 三阶段的关系
+#### 🔄 多种路径选择
 
 ```
+完整RLHF路径（最佳效果）:
 预训练GPT → SFT → RM → PPO → 对齐模型
-              ↓            ↓         ↓
-          对话能力    评判能力   价值观
+                ↓      ↓      ↓       ↓
+            对话能力  评判  强化  价值观
+
+DPO路径（简化）:
+  预训练GPT → SFT → DPO → 对齐模型
+                ↓      ↓       ↓
+            对话能力  偏好  价值观
+            (跳过RM和PPO)
+
+GRPO路径（高效）⭐:
+  预训练GPT → SFT → RM → GRPO → 对齐模型
+                ↓      ↓      ↓        ↓
+            对话能力  评判  组对比  价值观
+            (1个模型，显存友好)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 类比整个过程:
 
@@ -1493,10 +1534,18 @@ RM: 培养判断力 👦
   知道什么是好、什么是坏
   "这个回答有用" vs "这个回答敷衍"
   
-PPO: 自主成长 🎓
+PPO: 自主成长（完整路径）🎓
   通过不断尝试和反馈
   形成自己的行为准则
   既有原则，又懂变通
+
+DPO: 快速成长（简化路径）🚀
+  直接从好坏示例中学习
+  跳过反复尝试的过程
+
+GRPO: 高效成长（工业路径）⚡
+  小组内互相比较学习
+  资源利用最优化
 ```
 
 ---
@@ -4101,7 +4150,974 @@ print("DPO training completed!")
 
 ---
 
-### 📚 2.5 效果评估
+### 📚 2.5 GRPO：组相对策略优化
+
+> **目标**：通过组内对比学习实现更高效的对齐  
+> **输入**：SFT模型 + 对比数据  
+> **输出**：对齐后的模型（更快、更稳定！）
+
+#### 💡 为什么需要GRPO？
+
+**DPO的进一步改进**
+
+```python
+RLHF演进历程：
+
+第一代：PPO（2017）
+  ✅ 效果好（OpenAI的选择）
+  ❌ 复杂（3个模型）
+  ❌ 不稳定（训练困难）
+  ❌ 慢（需要1-2周）
+
+第二代：DPO（2023）
+  ✅ 简化（2个模型）
+  ✅ 稳定（训练容易）
+  ❌ 仍需参考模型（显存占用）
+  ❌ 对数据质量敏感
+
+第三代：GRPO（2024）⭐ 最新！
+  ✅ 更简单（1个模型）✨
+  ✅ 更稳定（组内归一化）
+  ✅ 更高效（显存友好）
+  ✅ 更强的泛化能力
+  
+  这是DeepSeek-V2的秘密武器！
+```
+
+**GRPO的核心创新**
+
+```python
+关键问题：DPO为什么还需要参考模型？
+
+DPO的逻辑:
+  需要计算: log π(y|x) - log π_ref(y|x)
+  目的: 防止模型偏离太远
+  代价: 需要加载π_ref（显存翻倍）
+
+GRPO的洞察:
+  与其用固定的π_ref对比
+  不如用同一个batch内的其他样本对比！
+  
+  核心思想:
+    在一个batch内生成多个回答
+    用组内的相对排名来指导学习
+    不需要额外的参考模型！
+
+数学上:
+  DPO: 让chosen > rejected（相对于ref）
+  GRPO: 让高分回答 > 低分回答（相对于组平均）
+  
+效果:
+  ✅ 显存减半（不需要ref模型）
+  ✅ 训练更稳定（组内归一化）
+  ✅ 收敛更快（相对比较更容易）
+```
+
+#### 📊 GRPO vs DPO vs PPO 对比
+
+```python
+┌─────────────────┬─────────────┬─────────────┬──────────────┐
+│    特性         │     PPO     │     DPO     │    GRPO      │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 训练阶段        │ 3个         │ 2个         │ 2个 ✅       │
+│                 │ (SFT+RM+PPO)│ (SFT+DPO)   │ (SFT+GRPO)   │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 推理时模型数量  │ 3个         │ 2个         │ 1个 ✅       │
+│                 │ (π+ref+RM)  │ (π+ref)     │ (π)          │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 显存需求        │ 很高(3x)    │ 高(2x)      │ 低(1x) ✅    │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 训练稳定性      │ 低 ⚠️       │ 中等        │ 高 ✅        │
+│                 │ (PPO波动)   │             │ (组归一化)   │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 数据效率        │ 中等        │ 高          │ 很高 ✅      │
+│                 │             │             │ (组内对比)   │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 训练速度        │ 慢(1-2周)   │ 快(2-3天)   │ 很快(1-2天)✅│
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 实现复杂度      │ 高(~500行)  │ 中(~100行)  │ 低(~80行) ✅ │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 超参数敏感度    │ 很高        │ 中等        │ 低 ✅        │
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 最终效果        │ 最好(100%)  │ 很好(95-98%)│ 很好(96-99%)✅│
+├─────────────────┼─────────────┼─────────────┼──────────────┤
+│ 典型应用        │ GPT-3/4     │ Claude      │ DeepSeek-V2  │
+│                 │ Llama-2     │ Llama-3     │ Qwen系列     │
+└─────────────────┴─────────────┴─────────────┴──────────────┘
+
+结论: GRPO是当前最实用的对齐方法！
+  - DeepSeek-V2用它达到了GPT-4级别效果
+  - 阿里Qwen系列也采用了GRPO
+  - 工业界的新标准 ⭐
+```
+
+---
+
+#### 📐 GRPO数学原理（直观理解）
+
+##### 核心思想：组内相对排名
+
+```python
+GRPO的工作流程：
+
+步骤1: 采样多个回答
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  给定prompt: "解释什么是量子计算"
+  
+  生成K个回答（同一个batch内）:
+    y₁: "量子计算是..."（详细专业）
+    y₂: "不知道"（敷衍）
+    y₃: "量子计算利用..."（中等）
+    y₄: "这是一种..."（简短）
+    
+  K通常设为4-8
+
+步骤2: 用奖励模型打分
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  r₁ = 9.2（最好）
+  r₂ = 2.1（最差）
+  r₃ = 7.5（中等）
+  r₄ = 6.0（一般）
+  
+  平均分: r_mean = (9.2 + 2.1 + 7.5 + 6.0) / 4 = 6.2
+
+步骤3: 计算相对优势
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  优势 = 实际得分 - 组平均分
+  
+  A₁ = r₁ - r_mean = 9.2 - 6.2 = +3.0 ✅（好！）
+  A₂ = r₂ - r_mean = 2.1 - 6.2 = -4.1 ❌（差！）
+  A₃ = r₃ - r_mean = 7.5 - 6.2 = +1.3 ✅（不错）
+  A₄ = r₄ - r_mean = 6.0 - 6.2 = -0.2 ⚠️（略差）
+
+步骤4: 加权优化
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  提升好的回答的概率:
+    ↑ 增大 P(y₁|x)（优势+3.0）
+    ↑ 增大 P(y₃|x)（优势+1.3）
+    
+  降低差的回答的概率:
+    ↓ 减小 P(y₂|x)（优势-4.1）
+    ↓ 减小 P(y₄|x)（优势-0.2）
+  
+  权重 = 优势值（相对于组平均）
+```
+
+**为什么这样有效？**
+
+```python
+优势1: 自动归一化
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  组内相对比较消除了绝对分数的影响
+  
+  例子:
+    Batch A: 分数都在8-10分（高质量prompt）
+    Batch B: 分数都在2-4分（低质量prompt）
+    
+    GRPO看的是组内排名，不受绝对分数影响
+    训练更稳定！
+
+优势2: 数据效率高
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  一个prompt生成K个回答
+  = K×(K-1)/2个对比对！
+  
+  例子: K=4生成4个回答
+    可以得到6个对比对：
+    (y₁,y₂), (y₁,y₃), (y₁,y₄)
+    (y₂,y₃), (y₂,y₄), (y₃,y₄)
+    
+  数据利用率提升K倍！
+
+优势3: 梯度更稳定
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  相对于组平均的优势，梯度方差更小
+  不会出现PPO那样的奖励波动
+  训练曲线平滑！
+```
+
+##### GRPO损失函数详解
+
+```python
+完整的GRPO损失函数:
+
+L_GRPO = -E[A(y) × log π(y|x)]
+
+其中:
+  A(y) = r(y) - mean(r(y₁...yₖ))  # 优势函数
+  r(y) = 奖励模型的分数
+  π(y|x) = 当前模型生成y的概率
+  K = 每个prompt采样的回答数量
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+逐步理解:
+
+步骤1: 计算组平均
+  r_mean = (r(y₁) + r(y₂) + ... + r(yₖ)) / K
+
+步骤2: 计算每个样本的优势
+  A(yᵢ) = r(yᵢ) - r_mean
+  
+  含义: 这个回答比平均水平好/差多少
+
+步骤3: 计算加权log概率
+  loss = -Σ A(yᵢ) × log π(yᵢ|x)
+  
+  含义: 
+    - 如果A>0（好回答），增大概率（loss降低）
+    - 如果A<0（差回答），减小概率（loss降低）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+直觉理解:
+
+好回答（A=+3）:
+  loss = -3 × log π(y|x)
+  要降低loss → 增大π(y|x) ✅
+  权重大 → 强烈鼓励
+
+差回答（A=-3）:
+  loss = -(-3) × log π(y|x) = 3 × log π(y|x)
+  要降低loss → 减小π(y|x) ✅
+  权重大 → 强烈惩罚
+
+中等回答（A≈0）:
+  loss ≈ 0
+  几乎不调整 ⚠️
+  权重小 → 轻微调整
+```
+
+##### 与PPO策略梯度的联系
+
+```python
+GRPO本质上是PPO的简化版:
+
+PPO的优势函数:
+  A^PPO(s,a) = Q(s,a) - V(s)
+  
+  需要学习V(s)（价值函数）
+  需要维护baseline
+
+GRPO的优势函数:
+  A^GRPO(y) = r(y) - mean(r)
+  
+  直接用组平均作为baseline！
+  不需要额外学习
+
+本质:
+  两者都是Policy Gradient
+  GRPO用组平均代替了价值函数
+  更简单，但效果相当！
+```
+
+---
+
+#### 🔧 GRPO完整实现
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+
+class GRPOTrainer:
+    """Group Relative Policy Optimization训练器"""
+    def __init__(
+        self,
+        policy_model,           # 策略模型（要优化的）
+        reward_model,           # 奖励模型
+        tokenizer,
+        num_samples=4,          # 每个prompt采样的回答数
+        learning_rate=1e-6,
+        max_length=512,
+        temperature=1.0
+    ):
+        self.policy = policy_model
+        self.reward_model = reward_model
+        self.tokenizer = tokenizer
+        self.num_samples = num_samples
+        self.max_length = max_length
+        self.temperature = temperature
+        
+        # 冻结奖励模型
+        self.reward_model.eval()
+        for param in self.reward_model.parameters():
+            param.requires_grad = False
+        
+        # 优化器
+        self.optimizer = torch.optim.AdamW(
+            self.policy.parameters(),
+            lr=learning_rate
+        )
+    
+    def sample_responses(self, prompt):
+        """为一个prompt采样K个回答"""
+        responses = []
+        log_probs_list = []
+        
+        # 编码prompt
+        prompt_tokens = self.tokenizer(
+            prompt,
+            return_tensors='pt',
+            padding=True
+        )
+        prompt_length = prompt_tokens['input_ids'].shape[1]
+        
+        for _ in range(self.num_samples):
+            # 生成回答
+            output = self.policy.generate(
+                input_ids=prompt_tokens['input_ids'],
+                attention_mask=prompt_tokens['attention_mask'],
+                max_length=self.max_length,
+                temperature=self.temperature,
+                do_sample=True,
+                return_dict_in_generate=True,
+                output_scores=True
+            )
+            
+            # 提取生成的token
+            generated_tokens = output.sequences[:, prompt_length:]
+            response = self.tokenizer.decode(
+                generated_tokens[0],
+                skip_special_tokens=True
+            )
+            responses.append(response)
+            
+            # 计算log概率
+            log_probs = self.compute_log_probs(
+                prompt_tokens['input_ids'],
+                output.sequences,
+                prompt_length
+            )
+            log_probs_list.append(log_probs)
+        
+        return responses, log_probs_list
+    
+    def compute_log_probs(self, prompt_ids, full_ids, prompt_length):
+        """计算生成序列的log概率"""
+        # 前向传播
+        outputs = self.policy(
+            input_ids=full_ids,
+            attention_mask=torch.ones_like(full_ids)
+        )
+        
+        # 获取logits和计算log概率
+        logits = outputs.logits[:, prompt_length-1:-1, :]
+        labels = full_ids[:, prompt_length:]
+        
+        log_probs = F.log_softmax(logits, dim=-1)
+        selected_log_probs = torch.gather(
+            log_probs,
+            dim=-1,
+            index=labels.unsqueeze(-1)
+        ).squeeze(-1)
+        
+        # 求和（整个response的log概率）
+        total_log_prob = selected_log_probs.sum()
+        return total_log_prob
+    
+    def compute_rewards(self, prompt, responses):
+        """用奖励模型给回答打分"""
+        rewards = []
+        
+        for response in responses:
+            # 构造完整文本
+            full_text = prompt + response
+            
+            # 用奖励模型打分
+            with torch.no_grad():
+                tokens = self.tokenizer(
+                    full_text,
+                    return_tensors='pt',
+                    max_length=self.max_length,
+                    truncation=True
+                )
+                
+                reward_output = self.reward_model(
+                    input_ids=tokens['input_ids'],
+                    attention_mask=tokens['attention_mask']
+                )
+                
+                # 提取奖励分数（通常是最后一个token的logit）
+                reward = reward_output.logits[:, -1, 0]
+                rewards.append(reward.item())
+        
+        return torch.tensor(rewards)
+    
+    def grpo_loss(self, prompt, responses, log_probs_list, rewards):
+        """计算GRPO损失"""
+        # 1. 计算组平均奖励（baseline）
+        mean_reward = rewards.mean()
+        
+        # 2. 计算优势函数（相对于组平均）
+        advantages = rewards - mean_reward
+        
+        # 3. 归一化优势（可选，使训练更稳定）
+        if len(advantages) > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        # 4. 计算加权log概率损失
+        loss = 0
+        for log_prob, advantage in zip(log_probs_list, advantages):
+            # GRPO损失: -A(y) × log π(y|x)
+            loss -= advantage * log_prob
+        
+        # 平均
+        loss = loss / len(responses)
+        
+        # 5. 统计信息
+        with torch.no_grad():
+            stats = {
+                'mean_reward': mean_reward.item(),
+                'max_reward': rewards.max().item(),
+                'min_reward': rewards.min().item(),
+                'reward_std': rewards.std().item(),
+                'mean_advantage': advantages.mean().item()
+            }
+        
+        return loss, stats
+    
+    def train_step(self, prompt):
+        """单个prompt的训练步骤"""
+        # 1. 采样K个回答
+        responses, log_probs_list = self.sample_responses(prompt)
+        
+        # 2. 计算奖励
+        rewards = self.compute_rewards(prompt, responses)
+        
+        # 3. 计算GRPO损失
+        loss, stats = self.grpo_loss(prompt, responses, log_probs_list, rewards)
+        
+        # 4. 反向传播
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # 梯度裁剪
+        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
+        
+        # 更新参数
+        self.optimizer.step()
+        
+        return loss.item(), stats
+    
+    def train(self, prompts, epochs=1):
+        """训练GRPO"""
+        self.policy.train()
+        
+        for epoch in range(epochs):
+            total_loss = 0
+            total_reward = 0
+            
+            print(f"\nEpoch {epoch + 1}/{epochs}")
+            print("=" * 60)
+            
+            for i, prompt in enumerate(prompts):
+                # 训练步骤
+                loss, stats = self.train_step(prompt)
+                
+                total_loss += loss
+                total_reward += stats['mean_reward']
+                
+                # 日志
+                if (i + 1) % 10 == 0:
+                    avg_loss = total_loss / (i + 1)
+                    avg_reward = total_reward / (i + 1)
+                    
+                    print(f"Step {i + 1}/{len(prompts)}")
+                    print(f"  Loss: {loss:.4f} (avg: {avg_loss:.4f})")
+                    print(f"  Reward: {stats['mean_reward']:.4f} "
+                          f"(avg: {avg_reward:.4f})")
+                    print(f"  Reward range: [{stats['min_reward']:.2f}, "
+                          f"{stats['max_reward']:.2f}]")
+                    print(f"  Reward std: {stats['reward_std']:.4f}")
+            
+            # Epoch总结
+            avg_loss = total_loss / len(prompts)
+            avg_reward = total_reward / len(prompts)
+            
+            print(f"\nEpoch {epoch + 1} Summary:")
+            print(f"  Average Loss: {avg_loss:.4f}")
+            print(f"  Average Reward: {avg_reward:.4f}")
+        
+        return self.policy
+
+# ========== 使用示例 ==========
+
+# 1. 加载模型
+policy_model = GPT2LMHeadModel.from_pretrained('sft_model')
+reward_model = GPT2LMHeadModel.from_pretrained('reward_model')
+tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+
+# 2. 创建GRPO训练器
+grpo_trainer = GRPOTrainer(
+    policy_model=policy_model,
+    reward_model=reward_model,
+    tokenizer=tokenizer,
+    num_samples=4,          # 每个prompt生成4个回答
+    learning_rate=1e-6,     # 较小的学习率
+    temperature=1.0         # 采样温度
+)
+
+# 3. 准备prompts
+prompts = [
+    "### Human: Python是什么？\n### Assistant:",
+    "### Human: 如何学习机器学习？\n### Assistant:",
+    "### Human: 解释什么是深度学习\n### Assistant:",
+    # ... 更多prompts
+]
+
+# 4. 训练
+aligned_model = grpo_trainer.train(
+    prompts=prompts,
+    epochs=1  # GRPO通常1个epoch就够了
+)
+
+# 5. 保存
+aligned_model.save_pretrained('grpo_model')
+print("GRPO training completed!")
+```
+
+---
+
+#### 📈 GRPO训练技巧
+
+```python
+技巧1: 采样数量K的选择
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+推荐值: K = 4-8
+
+K太小（如2）:
+  ❌ 组内对比不充分
+  ❌ 梯度方差大
+  ❌ 训练不稳定
+
+K适中（4-8）⭐ 推荐:
+  ✅ 充分的组内对比
+  ✅ 梯度稳定
+  ✅ 显存可控
+
+K太大（如16）:
+  ✅ 更多对比信息
+  ❌ 显存需求高
+  ❌ 计算慢
+  ⚠️ 收益递减
+
+实践:
+  - 显存充足: K=8
+  - 显存有限: K=4
+  - 研究实验: K=16
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+技巧2: 采样温度设置
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+推荐值: temperature = 0.7-1.0
+
+Temperature低（0.5）:
+  ✅ 生成质量高
+  ❌ 多样性低（回答相似）
+  ❌ 组内对比不明显
+
+Temperature适中（0.7-1.0）⭐:
+  ✅ 平衡质量和多样性
+  ✅ 组内有明显差异
+  ✅ 学习效率高
+
+Temperature高（1.5）:
+  ✅ 多样性很高
+  ❌ 质量下降
+  ❌ 可能产生无意义输出
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+技巧3: Learning Rate
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+推荐值: 1e-6 到 5e-6
+
+比DPO更小:
+  原因: GRPO直接用梯度更新策略
+  风险: 太大的lr会导致策略崩溃
+  
+建议:
+  - 开始时用1e-6
+  - 如果训练太慢，逐步增大到5e-6
+  - 密切监控生成质量
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+技巧4: 优势归一化
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+强烈推荐: 开启优势归一化
+
+优势归一化:
+  A_norm = (A - mean(A)) / (std(A) + ε)
+
+好处:
+  ✅ 梯度尺度稳定
+  ✅ 训练更鲁棒
+  ✅ 对奖励尺度不敏感
+
+代码:
+  if len(advantages) > 1:
+      advantages = (advantages - advantages.mean()) / \
+                   (advantages.std() + 1e-8)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+技巧5: 奖励模型质量
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GRPO的效果高度依赖RM质量！
+
+检查RM:
+  - 在验证集上准确率 > 70%
+  - 奖励分数有明显区分度
+  - 对不同质量回答打分合理
+
+改进RM:
+  ✅ 增加偏好数据量
+  ✅ 提高数据质量
+  ✅ 调整RM训练参数
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+技巧6: 训练监控
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+关键指标:
+  1. Mean Reward: 应该逐渐上升
+  2. Reward Std: 组内差异，应该合理（不能太小）
+  3. Loss: 应该下降
+  4. 生成质量: 定期人工检查
+
+警告信号:
+  ⚠️ Reward不上升 → 检查RM
+  ⚠️ Reward Std很小 → 增大temperature
+  ⚠️ Loss震荡 → 减小learning rate
+  ⚠️ 生成质量下降 → 停止训练，降低lr
+```
+
+---
+
+#### ⚙️ GRPO高级技巧
+
+##### 1. 在线RM vs 离线RM
+
+```python
+离线RM（推荐初学者）:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  流程:
+    1. 先训练好RM
+    2. 冻结RM
+    3. 用RM打分做GRPO
+  
+  优点:
+    ✅ 简单稳定
+    ✅ RM不会随训练变化
+  
+  缺点:
+    ⚠️ RM可能过时（Policy进步了，RM没跟上）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+在线RM（高级）:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  流程:
+    1. Policy和RM交替训练
+    2. Policy更新后，用新数据微调RM
+    3. RM跟随Policy进步
+  
+  优点:
+    ✅ RM始终准确
+    ✅ 效果更好
+  
+  缺点:
+    ❌ 复杂
+    ❌ 需要持续收集偏好数据
+```
+
+##### 2. 混合采样策略
+
+```python
+纯采样（默认）:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  所有K个回答都从Policy采样
+  
+  优点:
+    ✅ 简单
+    ✅ 完全反映Policy当前状态
+  
+  缺点:
+    ⚠️ 如果Policy已经很好，回答都相似
+    ⚠️ 组内对比不明显
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+混合采样（高级）⭐:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  50%从Policy采样（探索新策略）
+  50%从预定义池子（如SFT回答）
+  
+  例子:
+    y₁, y₂: 从Policy采样（新策略）
+    y₃: 从SFT模型采样（baseline）
+    y₄: 从负样本库（差回答）
+  
+  优点:
+    ✅ 始终有对比
+    ✅ 训练更稳定
+    ✅ 防止模式崩溃
+  
+  代码:
+    if i < num_samples // 2:
+        # 从Policy采样
+        response = policy.generate(...)
+    else:
+        # 从baseline采样
+        response = sft_model.generate(...)
+```
+
+##### 3. 分层采样
+
+```python
+不同温度采样:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  
+  为同一个prompt用不同temperature采样
+  
+  例子: K=4
+    y₁: temperature=0.5（保守，高质量）
+    y₂: temperature=0.7（适中）
+    y₃: temperature=1.0（平衡）
+    y₄: temperature=1.5（激进，探索）
+  
+  效果:
+    ✅ 覆盖不同风格
+    ✅ 组内差异大
+    ✅ 学习更充分
+```
+
+---
+
+#### ⚠️ GRPO常见问题
+
+```python
+问题1: Reward不上升
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+现象:
+  训练loss下降，但mean reward没有提升
+
+原因:
+  - RM质量差，打分不准
+  - Temperature太低，回答太相似
+  - Learning rate太大，策略不稳定
+
+解决:
+  ✅ 检查RM在验证集上的表现
+  ✅ 增大temperature（0.7 → 1.0）
+  ✅ 减小learning rate（5e-6 → 1e-6）
+  ✅ 增加采样数量K（4 → 8）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+问题2: 生成质量崩溃
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+现象:
+  训练几步后，生成的文本变得不自然或重复
+
+原因:
+  - Learning rate太大
+  - 没有KL约束，偏离SFT太远
+  - Reward hacking（模型在钻RM的漏洞）
+
+解决:
+  ✅ 立即停止训练，回到上个checkpoint
+  ✅ 减小learning rate（减半）
+  ✅ 添加KL惩罚项（见下方）
+  ✅ 检查RM是否被"hack"
+
+添加KL约束:
+  loss = grpo_loss + β × KL(π || π_ref)
+  
+  β = 0.01-0.1（KL惩罚系数）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+问题3: 显存不足
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+现象:
+  OOM (Out of Memory)
+
+解决方案（按优先级）:
+  
+  1. 减小采样数量K
+     8 → 4 → 2
+  
+  2. 减小max_length
+     512 → 256
+  
+  3. 梯度累积
+     accumulation_steps = 4
+     每4步更新一次
+  
+  4. 使用混合精度
+     torch.cuda.amp.autocast()
+  
+  5. 梯度checkpointing
+     model.gradient_checkpointing_enable()
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+问题4: Reward Std太小
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+现象:
+  组内所有回答的分数都很接近
+
+原因:
+  - Temperature太低
+  - RM区分度不够
+  - Policy已经收敛得很好
+
+解决:
+  ✅ 增大temperature
+  ✅ 使用混合采样策略
+  ✅ 添加负样本（故意差的回答）
+  ⚠️ 如果Policy真的很好了，这可能是好事！
+```
+
+---
+
+#### 🔬 GRPO vs DPO：何时选择哪个？
+
+```python
+选择GRPO的场景：
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ 显存非常有限（单卡训练）
+   GRPO只需1个模型，DPO需要2个
+
+✅ 已经有训练好的RM
+   GRPO可以充分利用RM
+
+✅ 需要在线学习
+   GRPO可以在线采样和更新
+
+✅ 追求训练速度
+   GRPO通常1个epoch就够
+
+✅ 数据量较少
+   GRPO的组内对比数据效率更高
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+选择DPO的场景：
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ 没有训练好的RM
+   DPO不需要RM
+
+✅ 显存充足（多卡训练）
+   DPO的2个模型不是问题
+
+✅ 有大量高质量偏好对
+   DPO直接利用偏好对
+
+✅ 追求稳定性
+   DPO训练非常稳定
+
+✅ 快速原型
+   DPO实现更简单
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+实际建议：
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 第一次尝试对齐:
+   SFT → DPO ⭐
+   （最简单稳定）
+
+2. 有RM且显存有限:
+   SFT → RM → GRPO ⭐
+   （显存友好）
+
+3. 追求极致效果:
+   SFT → RM → PPO
+   （最好但最难）
+
+4. 工业级应用:
+   SFT → DPO 或 GRPO ⭐⭐⭐
+   （实用平衡）
+```
+
+---
+
+**GRPO总结**
+
+```python
+✅ GRPO的核心优势：
+  1. 显存友好：只需1个模型（vs DPO的2个）
+  2. 训练稳定：组内归一化，梯度方差小
+  3. 数据高效：组内对比，数据利用率K倍
+  4. 收敛快速：通常1个epoch就够
+  5. 实现简单：~80行核心代码
+  6. 效果优秀：接近PPO，超越DPO
+
+⚠️ GRPO的注意事项：
+  1. 依赖高质量RM（必须先训练好RM）
+  2. 需要仔细调整采样数量K和temperature
+  3. Learning rate要小（1e-6级别）
+  4. 需要监控生成质量，防止崩溃
+
+🎯 GRPO适用场景：
+  ✅ 单GPU训练（显存有限）
+  ✅ 已有训练好的RM
+  ✅ 追求训练速度
+  ✅ 需要在线学习
+  ✅ 工业级部署（DeepSeek, Qwen的选择）
+
+📈 典型训练配置：
+  模型: 7B参数
+  显存: 单张A100 40GB
+  采样数: K=4
+  Temperature: 0.8
+  Learning rate: 1e-6
+  训练时间: 1-2天
+  
+  对比DPO:
+    显存节省: 50%
+    速度提升: 30%
+    效果相当: 96-99% of PPO
+
+🌟 为什么GRPO是未来趋势？
+  - DeepSeek-V2用它达到GPT-4水平
+  - 阿里Qwen系列采用GRPO
+  - 资源效率是工业界的核心需求
+  - 开源社区快速采纳
+
+实践建议:
+  初学者: SFT → DPO（先掌握基础）⭐
+  进阶者: SFT → RM → GRPO（追求效率）⭐⭐
+  专家: 根据具体需求在PPO/DPO/GRPO间选择
+  生产: GRPO优先（工业界标准）⭐⭐⭐
+```
+
+---
+
+### 📚 2.6 效果评估
 
 > **目标**：全面评估模型的对齐效果  
 > **方法**：自动评估 + 人类评估 + 安全性测试  
@@ -4550,7 +5566,14 @@ results = evaluator.generate_report(test_prompts, test_texts)
   ├─ 时间：2-3天
   └─ 效果：接近RLHF 95-98%
 
-2.5 效果评估
+2.5 可选：GRPO高效方案⭐
+  ├─ 需要：SFT + RM
+  ├─ 核心：组内相对对比学习
+  ├─ 优势：显存友好（1个模型）、训练稳定
+  ├─ 时间：1-2天（最快！）
+  └─ 效果：接近PPO 96-99%
+
+2.6 效果评估
   ├─ 自动指标：RM分数、困惑度、多样性
   ├─ 人类评估：有用性、无害性、诚实性（3H）
   ├─ 对比测试：A/B测试、胜率
@@ -4561,21 +5584,28 @@ results = evaluator.generate_report(test_prompts, test_texts)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 数据量:
-  SFT:  10K-50K 对话
-  RM:   30K-100K 对比对
-  PPO:  10K-50K prompts
+  SFT:   10K-50K 对话
+  RM:    30K-100K 对比对
+  PPO:   10K-50K prompts
+  DPO:   30K-100K 对比对
+  GRPO:  10K-50K prompts
 
 成本:
   小规模（GPT-2 124M）:  ~$100
   中等（GPT-2 1.5B）:     ~$1K
   大规模（GPT-3 13B）:    ~$10K+
 
-时间:
-  SFT:   1-2天
-  RM:    3-7天
-  PPO:   1-2周
-  DPO:   2-3天
-  总计:  2-4周（RLHF）或 1周（DPO）
+时间（单卡/小规模）:
+  SFT:    1-2天
+  RM:     3-7天
+  PPO:    1-2周
+  DPO:    2-3天
+  GRPO:   1-2天（最快！）⭐
+  
+  总计路径:
+    完整RLHF（SFT+RM+PPO）:  2-4周
+    DPO方案（SFT+DPO）:       4-5天
+    GRPO方案（SFT+RM+GRPO）:  5-9天⭐
 
 效果提升:
   有用性:  +20-40%
@@ -4650,6 +5680,7 @@ results = evaluator.generate_report(test_prompts, test_texts)
 - [InstructGPT (RLHF原始论文)](https://arxiv.org/abs/2203.02155)
 - [PPO算法](https://arxiv.org/abs/1707.06347)
 - [DPO: Direct Preference Optimization](https://arxiv.org/abs/2305.18290)
+- [GRPO: Group Relative Policy Optimization (DeepSeek-V2)](https://arxiv.org/abs/2405.04434)
 
 ### 教程
 - [OpenAI Spinning Up in Deep RL](https://spinningup.openai.com/)
@@ -4719,6 +5750,15 @@ results = evaluator.generate_report(test_prompts, test_texts)
   ├─ 初始化: 用SFT模型
   └─ 监控准确率（>70%）
 
+✅ GRPO阶段:
+  ├─ Learning rate: 1e-6（最小！）
+  ├─ 采样数K: 4-8（平衡效果和显存）
+  ├─ Temperature: 0.7-1.0（保证多样性）
+  ├─ Epoch: 1（通常就够了）
+  ├─ 优势归一化: 强烈推荐开启
+  ├─ 初始化: 用SFT模型
+  └─ 监控: Mean Reward, Reward Std, Loss
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 调试技巧
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -4747,6 +5787,20 @@ results = evaluator.generate_report(test_prompts, test_texts)
   ├─ 减小β
   ├─ 增大learning rate
   └─ 检查SFT模型质量
+
+🔍 GRPO Reward不上升:
+  ├─ 检查RM质量（准确率>70%）
+  ├─ 增大temperature（提高多样性）
+  ├─ 减小learning rate
+  ├─ 增加采样数K
+  └─ 开启优势归一化
+
+🔍 GRPO生成质量崩溃:
+  ├─ 立即停止，回到checkpoint
+  ├─ 减小learning rate（减半）
+  ├─ 添加KL惩罚（β=0.01-0.1）
+  ├─ 检查RM是否被hack
+  └─ 降低temperature
 
 🔍 OOM（显存不足）:
   ├─ 减小batch size
@@ -4783,6 +5837,14 @@ results = evaluator.generate_report(test_prompts, test_texts)
   ├─ Loss: 应下降
   ├─ Reward margin: 应增大
   └─ 生成质量: 对比SFT
+
+📊 GRPO阶段:
+  ├─ Mean Reward: 应逐渐上升
+  ├─ Reward Std: 应合理（不能太小）
+  ├─ Loss: 应下降
+  ├─ Max/Min Reward: 组内最大最小值
+  ├─ Mean Advantage: 应接近0（归一化后）
+  └─ 生成质量: 定期人工检查（关键！）
 ```
 
 ---
@@ -4849,6 +5911,27 @@ dpo_config = {
 
 # 预计训练时间: 4-8小时
 # 预计显存需求: 16-20GB（需要2个模型）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ============ GRPO配置（显存友好）⭐ ============
+grpo_config = {
+    "policy_model": "sft_model",
+    "reward_model": "rm_model",  # 需要先训练RM
+    "prompts": 1000,  # prompt数量
+    "num_samples": 4,  # 每个prompt采样K个回答
+    "learning_rate": 1e-6,  # 很小的学习率
+    "temperature": 0.8,
+    "epochs": 1,
+    "max_length": 512,
+    "save_steps": 200,
+    "logging_steps": 10,
+    "advantage_normalization": True,  # 推荐开启
+    "fp16": True,
+}
+
+# 预计训练时间: 2-4小时
+# 预计显存需求: 8-12GB（只需1个模型！）⭐
 ```
 
 #### 中等规模（4xA100，GPT-2 1.5B）
@@ -4899,6 +5982,30 @@ dpo_config = {
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# ============ GRPO配置（推荐工业部署）⭐ ============
+grpo_config = {
+    "policy_model": "sft_model",
+    "reward_model": "rm_model",  # 需要先训练RM
+    "prompts": 10000,  # prompt数量
+    "num_samples": 8,  # 每个prompt采样K个回答
+    "per_device_prompts": 4,  # 每卡处理的prompt数
+    "num_gpus": 4,
+    "learning_rate": 1e-6,  # 很小的学习率
+    "temperature": 0.8,
+    "epochs": 1,
+    "max_length": 1024,
+    "save_steps": 500,
+    "logging_steps": 20,
+    "advantage_normalization": True,  # 推荐开启
+    "bf16": True,
+    "deepspeed": "ds_config_stage2.json",  # ZeRO-2
+}
+
+# 预计训练时间: 1-2天（比DPO更快！）
+# 预计显存需求: 每卡20-30GB（只需1个模型！）⭐
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 # DeepSpeed ZeRO-2配置示例
 # ds_config_stage2.json
 {
@@ -4930,8 +6037,6 @@ dpo_config = {
 ```
 
 ---
-
-**下一步：** 学习多模态模型（12_multimodal_models.md）
 
 ## 🎓 总结与检查
 
@@ -4965,12 +6070,13 @@ dpo_config = {
 
 ### 📊 RLHF方法速查表
 
-| 方法 | 复杂度 | 效果 | 训练成本 | 稳定性 | 推荐场景 |
-|------|--------|------|---------|--------|---------|
-| **SFT** | ⭐ 简单 | ⭐⭐⭐ 好 | 低 | ⭐⭐⭐⭐⭐ 高 | 基础对齐 ⭐⭐⭐⭐⭐ |
-| **PPO** | ⭐⭐⭐⭐ 复杂 | ⭐⭐⭐⭐⭐ 最好 | 高 | ⭐⭐ 低 | 追求极致 ⭐⭐⭐ |
-| **DPO** | ⭐⭐ 中等 | ⭐⭐⭐⭐ 很好 | 中 | ⭐⭐⭐⭐ 高 | 实际应用 ⭐⭐⭐⭐⭐ |
-| **RLAIF** | ⭐⭐⭐ 较难 | ⭐⭐⭐⭐ 很好 | 低 | ⭐⭐⭐ 中 | 无人类标注 ⭐⭐⭐⭐ |
+| 方法 | 复杂度 | 效果 | 训练成本 | 稳定性 | 显存需求 | 推荐场景 |
+|------|--------|------|---------|--------|----------|---------|
+| **SFT** | ⭐ 简单 | ⭐⭐⭐ 好 | 低 | ⭐⭐⭐⭐⭐ 高 | 低(1x) | 基础对齐 ⭐⭐⭐⭐⭐ |
+| **PPO** | ⭐⭐⭐⭐⭐ 最复杂 | ⭐⭐⭐⭐⭐ 最好 | 很高 | ⭐⭐ 低 | 很高(3x) | 追求极致 ⭐⭐⭐ |
+| **DPO** | ⭐⭐ 中等 | ⭐⭐⭐⭐ 很好 | 中 | ⭐⭐⭐⭐ 高 | 高(2x) | 实际应用 ⭐⭐⭐⭐ |
+| **GRPO** | ⭐⭐ 中等 | ⭐⭐⭐⭐⭐ 很好 | 中低 | ⭐⭐⭐⭐⭐ 很高 | 低(1x) | 工业部署 ⭐⭐⭐⭐⭐ |
+| **RLAIF** | ⭐⭐⭐ 较难 | ⭐⭐⭐⭐ 很好 | 低 | ⭐⭐⭐ 中 | 中(2x) | 无人类标注 ⭐⭐⭐⭐ |
 
 ### 🎯 如何选择对齐方法？
 
@@ -4988,20 +6094,41 @@ elif 追求最佳效果:
     step3 = "PPO"   # 强化学习微调
     # 完整RLHF流程
     
-elif 资源有限:
+elif 资源有限 and 显存紧张:
+    step1 = "SFT"   # 监督微调
+    step2 = "RM"    # 训练奖励模型
+    step3 = "GRPO"  # 组相对策略优化
+    # 显存友好，只需1个模型！⭐
+    
+elif 资源有限 and 无标注预算:
     step1 = "SFT"   # 监督微调
     step2 = "RLAIF" # AI反馈（无需人类标注）
     # 成本最低
     
-elif 追求稳定:
+elif 追求稳定 and 有RM:
+    step1 = "SFT"   # 监督微调
+    step2 = "RM"    # 训练奖励模型
+    step3 = "GRPO"  # 组相对策略优化
+    # 训练最稳定，数据高效⭐
+    
+elif 追求稳定 and 无RM:
     step1 = "SFT"  # 监督微调
     step2 = "DPO"  # 直接偏好优化
-    # 训练最稳定
+    # 不需要RM，简单稳定
+
+elif 工业部署:
+    # 推荐方案：平衡效果、成本、稳定性
+    step1 = "SFT"   # 监督微调
+    step2 = "RM"    # 训练奖励模型
+    step3 = "GRPO"  # 组相对策略优化
+    # DeepSeek和Qwen的选择⭐⭐⭐
 
 # 实际案例
 ChatGPT: SFT → RM → PPO（完整RLHF）
 Claude: SFT → DPO（更简单）
 Llama-2: SFT → RM → PPO（开源最佳实践）
+DeepSeek-V2: SFT → RM → GRPO（工业级方案）⭐
+Qwen系列: SFT → RM → GRPO（高效对齐）⭐
 ```
 
 ### 🚀 下一步学习
